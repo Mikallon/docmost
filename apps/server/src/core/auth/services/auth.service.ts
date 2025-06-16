@@ -22,6 +22,13 @@ import { ForgotPasswordDto } from '../dto/forgot-password.dto';
 import ForgotPasswordEmail from '@docmost/transactional/emails/forgot-password-email';
 import { UserTokenRepo } from '@docmost/db/repos/user-token/user-token.repo';
 import { PasswordResetDto } from '../dto/password-reset.dto';
+import { FastifyRequest } from 'fastify';
+import { Issuer } from 'openid-client';
+import { WorkspaceRepo } from '@docmost/db/repos/workspace/workspace.repo';
+import { UserRole } from 'src/common/helpers/types/permission';
+import { WorkspaceService } from 'src/core/workspace/services/workspace.service';
+import { GroupUserRepo } from '@docmost/db/repos/group/group-user.repo';
+import { EnvironmentService } from 'src/integrations/environment/environment.service';
 import { UserToken, Workspace } from '@docmost/db/types/entity.types';
 import { UserTokenType } from '../auth.constants';
 import { KyselyDB } from '@docmost/db/types/kysely.types';
@@ -38,6 +45,10 @@ export class AuthService {
     private userRepo: UserRepo,
     private userTokenRepo: UserTokenRepo,
     private mailService: MailService,
+    private workspaceRepo: WorkspaceRepo,
+    private groupUserRepo: GroupUserRepo,
+    private workspaceService: WorkspaceService,
+    private environmentService: EnvironmentService,
     private domainService: DomainService,
     @InjectKysely() private readonly db: KyselyDB,
   ) {}
@@ -63,6 +74,112 @@ export class AuthService {
 
     user.lastLoginAt = new Date();
     await this.userRepo.updateLastLogin(user.id, workspaceId);
+
+    return this.tokenService.generateAccessToken(user);
+  }
+
+  async oidcLogin(req: FastifyRequest) {
+    type QueryParams = {
+      code: string;
+      state: string;
+    };
+
+    function validateQuery(query: any): { success: true; data: QueryParams } | { success: false; error: string } {
+      if (typeof query.code !== 'string') {
+        return { success: false, error: 'Missing or invalid "code" parameter' };
+      }
+      if (typeof query.state !== 'string') {
+        return { success: false, error: 'Missing or invalid "state" parameter' };
+      }
+
+      return { success: true, data: { code: query.code, state: query.state } };
+    }
+    
+    const result = validateQuery(req.query);
+
+    if (!result.success) {
+      console.log("Missing or invalid parameters: " + JSON.stringify(result));
+      throw new UnauthorizedException();
+    }
+
+    const query = result.data;
+
+    if (!query) {
+      throw new UnauthorizedException();
+    }
+
+    // const workspace = await this.workspaceRepo.findById(query.state);
+    const workspaceId = query.state;
+    const workspacePublicData = this.workspaceService.getWorkspacePublicData(workspaceId);
+    const authProvider = (await workspacePublicData).authProviders.find((provider) => provider.type === 'oidc');
+
+    if (
+      !authProvider ||
+      !authProvider.oidcIssuer ||
+      !authProvider.oidcClientId ||
+      !authProvider.oidcClientSecret
+    ) {
+      throw new UnauthorizedException();
+    }
+    
+    // const issuer = await Issuer.discover(authProvider.oidcIssuer);
+    const issuerUrl = authProvider.oidcIssuer;
+    const issuer = new Issuer({
+      issuer: issuerUrl,
+      authorization_endpoint: issuerUrl + '/oauth/authorize',
+      token_endpoint: issuerUrl + '/oauth/token',
+      userinfo_endpoint: issuerUrl + '/oauth/userinfo',
+      jwks_uri: issuerUrl + '/oauth/discovery/keys',
+      response_types_supported: ['code'],
+      grant_types_supported: ['authorization_code'],
+      id_token_signing_alg_values_supported: ['RS256'],
+    });
+    console.log("========= issuer222 ========="+JSON.stringify(issuer));
+
+    const client = new issuer.Client({
+      client_id: authProvider.oidcClientId,
+      client_secret: authProvider.oidcClientSecret,
+    });
+
+    const redirectUri = `${this.environmentService.getAppUrl()}/api/auth/cb`;
+
+    const params = client.callbackParams(req.raw);
+    const tokenSet = await client.callback(redirectUri, params, {
+      state: workspaceId,
+    });
+
+    const name = tokenSet.claims().name;
+    const email = tokenSet.claims().email;
+
+    if (!email) {
+      throw new UnauthorizedException();
+    }
+
+    const user = await this.userRepo.findByEmail(email, workspaceId);
+
+    if (!user) {
+      // TODO: The rules for this should be confirmed where they are configured
+      // if (
+      //   workspace.oidcJITEnabled &&
+      //   workspace.oidcDomains.includes(email.split('@')[1])
+      // ) {
+        const user = await this.userRepo.insertUser({
+          name,
+          email,
+          role: UserRole.MEMBER,
+          workspaceId: workspaceId,
+          emailVerifiedAt: new Date(),
+        });
+
+        // TODO: This should really all happen in one function under the UserService
+        await this.workspaceService.addUserToWorkspace(user.id, workspaceId);
+        await this.groupUserRepo.addUserToDefaultGroup(user.id, workspaceId);
+
+        return this.tokenService.generateAccessToken(user);
+      // }
+
+      // throw new UnauthorizedException();
+    }
 
     return this.tokenService.generateAccessToken(user);
   }

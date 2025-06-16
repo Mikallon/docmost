@@ -1,7 +1,7 @@
 import {
-  BadRequestException,
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Post,
@@ -22,13 +22,16 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { PasswordResetDto } from './dto/password-reset.dto';
 import { VerifyUserTokenDto } from './dto/verify-user-token.dto';
-import { FastifyReply } from 'fastify';
+import { WorkspaceService } from '../workspace/services/workspace.service';
+import { FastifyReply, FastifyRequest } from 'fastify';
+import { Issuer } from 'openid-client';
 import { addDays } from 'date-fns';
 import { validateSsoEnforcement } from './auth.util';
 
 @Controller('auth')
 export class AuthController {
   constructor(
+    private readonly workspaceService: WorkspaceService,
     private authService: AuthService,
     private environmentService: EnvironmentService,
   ) {}
@@ -44,6 +47,61 @@ export class AuthController {
 
     const authToken = await this.authService.login(loginInput, workspace.id);
     this.setAuthCookie(res, authToken);
+  }
+
+  @Get('cb')
+  @HttpCode(HttpStatus.TEMPORARY_REDIRECT)
+  async callback(@Req() req: FastifyRequest, @Res() reply: FastifyReply) {
+    const token = await this.authService.oidcLogin(req);
+
+    this.setAuthCookie(reply, token);
+
+    return reply.redirect(`${this.environmentService.getWebUrl()}/home`);
+  }
+
+  @Get('oauth-redirect')
+  @HttpCode(HttpStatus.TEMPORARY_REDIRECT)
+  async oauthRedirect(
+    @AuthWorkspace() workspace: Workspace,
+    @Res() reply: FastifyReply,
+  ) {
+    const redirectUri = `${this.environmentService.getAppUrl()}/api/auth/cb`;
+
+    const workspacePublicData = this.workspaceService.getWorkspacePublicData(workspace.id);
+    const authProvider = (await workspacePublicData).authProviders.find((provider) => provider.type === 'oidc');
+
+    if (!authProvider.oidcIssuer) {
+      return reply.redirect(`${this.environmentService.getAppUrl()}/login`);
+    }
+
+    // const issuer = await Issuer.discover(authProvider.oidcIssuer);
+    const issuerUrl = authProvider.oidcIssuer;
+    const issuer = new Issuer({
+      issuer: issuerUrl,
+      authorization_endpoint: issuerUrl + '/oauth/authorize',
+      token_endpoint: issuerUrl + '/oauth/token',
+      userinfo_endpoint: issuerUrl + '/oauth/userinfo',
+      jwks_uri: issuerUrl + '/oauth/discovery/keys',
+      response_types_supported: ['code'],
+      grant_types_supported: ['authorization_code'],
+      id_token_signing_alg_values_supported: ['RS256'],
+    });
+    console.log("========= issuer111 ========="+JSON.stringify(issuer));
+    
+    if (!issuer.metadata.authorization_endpoint || !authProvider.oidcClientId) {
+      return reply.redirect(`${this.environmentService.getAppUrl()}/login`);
+    }
+
+    const authRedirect =
+      `${issuer.metadata.authorization_endpoint}` +
+      `?response_type=code` +
+      `&client_id=${authProvider.oidcClientId}` +
+      `&redirect_uri=${redirectUri}` +
+      `&scope=openid profile email` +
+      `&state=${workspace.id}` +
+      `&prompt=login`;
+
+    return reply.redirect(authRedirect);
   }
 
   @UseGuards(SetupGuard)
@@ -118,7 +176,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('logout')
   async logout(@Res({ passthrough: true }) res: FastifyReply) {
-    res.clearCookie('authToken');
+    this.clearAuthCookie(res);
   }
 
   setAuthCookie(res: FastifyReply, token: string) {
@@ -127,6 +185,13 @@ export class AuthController {
       path: '/',
       expires: addDays(new Date(), 30),
       secure: this.environmentService.isHttps(),
+    });
+  }
+
+  clearAuthCookie(res: FastifyReply) {
+    res.clearCookie('authToken', {
+        path: '/',
+        secure: this.environmentService.isHttps(),
     });
   }
 }

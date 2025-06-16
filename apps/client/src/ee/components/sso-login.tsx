@@ -15,16 +15,12 @@ export default function SsoLogin() {
   }
 
   const handleSsoLogin = (provider: IAuthProvider) => {
-    window.location.href = buildSsoLoginUrl({
-      providerId: provider.id,
-      type: provider.type,
-      workspaceId: data.id,
-    });
+    window.location.href = "/api/auth/oauth-redirect";
   };
 
   return (
     <>
-      {(isCloud() || data.hasLicenseKey) && (
+      {(
         <>
           <Stack align="stretch" justify="center" gap="sm">
             {data.authProviders.map((provider) => (

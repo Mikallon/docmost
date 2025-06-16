@@ -60,7 +60,7 @@ export class UserRepo {
       includePassword?: boolean;
       trx?: KyselyTransaction;
     },
-  ): Promise<User> {
+  ): Promise<User | undefined> {
     const db = dbOrTx(this.db, opts?.trx);
     return db
       .selectFrom('users')
@@ -106,10 +106,13 @@ export class UserRepo {
       name:
         insertableUser.name || insertableUser.email.split('@')[0].toLowerCase(),
       email: insertableUser.email.toLowerCase(),
-      password: await hashPassword(insertableUser.password),
+      password: insertableUser.password
+        ? await hashPassword(insertableUser.password)
+        : null,
       locale: 'en-US',
       role: insertableUser?.role,
       lastLoginAt: new Date(),
+      workspaceId: insertableUser.workspaceId,
     };
 
     const db = dbOrTx(this.db, trx);

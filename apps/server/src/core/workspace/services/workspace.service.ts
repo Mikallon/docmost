@@ -76,6 +76,9 @@ export class WorkspaceService {
               'authProviders.id',
               'authProviders.name',
               'authProviders.type',
+              'authProviders.oidcIssuer',
+              'authProviders.oidcClientId',
+              'authProviders.oidcClientSecret',
             ])
             .where('authProviders.isEnabled', '=', true)
             .where('workspaceId', '=', workspaceId),

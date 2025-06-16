@@ -9,6 +9,14 @@ export class EnvironmentService {
     return this.configService.get<string>('NODE_ENV', 'development');
   }
 
+  getWebUrl(): string {
+    if (this.getNodeEnv() === 'production') {
+      return `${this.configService.get<string>('APP_URL')}`;
+    } else {
+      return 'http://localhost:5173';
+    }
+  }
+
   getAppUrl(): string {
     const rawUrl =
       this.configService.get<string>('APP_URL') ||

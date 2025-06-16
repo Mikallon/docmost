@@ -91,9 +91,6 @@ export default function App() {
             <Route path={"groups/:groupId"} element={<GroupInfo />} />
             <Route path={"spaces"} element={<Spaces />} />
             <Route path={"sharing"} element={<Shares />} />
-            <Route path={"security"} element={<Security />} />
-            {!isCloud() && <Route path={"license"} element={<License />} />}
-            {isCloud() && <Route path={"billing"} element={<Billing />} />}
           </Route>
         </Route>
 
